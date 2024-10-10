@@ -44,11 +44,19 @@
     }
 
     .login-container .form-group input {
-        width: 100%;
+        width: calc(100% - 30px);
         padding: 10px;
         border: 1px solid #ccc;
         border-radius: 4px;
         box-sizing: border-box;
+        display: inline-block;
+    }
+
+    .login-container .form-group .toggle-password {
+        display: inline-block;
+        cursor: pointer;
+        margin-left: 10px;
+        vertical-align: middle;
     }
 
     .login-container .form-group button {
@@ -72,6 +80,30 @@
         margin-top: 10px;
         color: #d9534f;
         text-align: center;
+    }
+
+    .login-container .facial-login,
+    .login-container .forgot-password {
+        text-align: center;
+        margin-top: 20px;
+    }
+
+    .login-container .facial-login button,
+    .login-container .forgot-password button {
+        width: 100%;
+        padding: 10px;
+        border: none;
+        border-radius: 4px;
+        background-color: #28a745;
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+        text-align: center;
+    }
+
+    .login-container .facial-login button:hover,
+    .login-container .forgot-password button:hover {
+        background-color: #218838;
     }
 </style>
 
@@ -102,6 +134,18 @@
         </div>
         {% endif %}
     </form>
+
+    <div class="facial-login">
+        <form action="{% url 'login_with_face' %}" method="get">
+            <button type="submit">Iniciar Sesión con Reconocimiento Facial</button>
+        </form>
+    </div>
+
+    <div class="forgot-password">
+        <form action="{% url 'password_reset' %}" method="get">
+            <button type="submit">Olvidó Su Contraseña</button>
+        </form>
+    </div>
 </div>
 
 <script>
@@ -115,6 +159,4 @@
         }
     }
 </script>
-
-
-{% endblock content %}
+{% endblock %}

@@ -1,4 +1,10 @@
-from django.shortcuts import render,redirect, get_object_or_404
+import face_recognition
+import cv2
+import numpy as np
+import base64
+import os
+import pdfkit
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from .models import *
 from .forms import EnrollmentForm
@@ -8,6 +14,21 @@ from datetime import timedelta
 from django.utils import timezone
 import re
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
+from django.http import JsonResponse
+from django.core.files.base import ContentFile
+from django.core.mail import send_mail
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_decode
+from django.conf import settings
+from django.http import JsonResponse, HttpResponse
+from django.core.files.base import ContentFile
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.core.exceptions import PermissionDenied
+
+
+
 
 
 
@@ -60,6 +81,10 @@ from .models import Student
 from django.contrib.auth.models import User
 from django.contrib import messages
 
+# views.py
+import face_recognition
+from django.core.files.uploadedfile import SimpleUploadedFile
+
 def register(request):
     if request.method == 'POST':
         name = request.POST['name']
@@ -71,37 +96,37 @@ def register(request):
         email = request.POST['email']
         password = request.POST['pwd']
         password_check = request.POST['pwd-repeat']
+        face_image = request.FILES.get('face_image')  # Nueva línea para obtener la imagen
 
         if password != password_check:
             messages.error(request, 'Las contraseñas no coinciden.')
-            return render(request, 'generales/register.html',{
-                'name':name,
-                'lastname':lastname,
-                'dpi':dpi,
-                'date':date,
-                'telephone':telephone,
-                'username':username,
-                'email':email,
-            })
-        if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_])[A-Za-z\d\W_]{12,}$', password):
-                    messages.error(request, 'La contraseña debe tener al menos 12 caracteres, incluyendo una letra mayúscula, un número y un carácter especial.')
-                    return render(request, 'generales/register.html', {...})
+            return render(request, 'generales/register.html', {...})
 
         if User.objects.filter(username=username).exists():
             messages.error(request, 'El nombre de usuario ya está en uso. Por favor elija otro.')
-            return render(request, 'generales/register.html', {
-                'name': name,
-                'lastname': lastname,
-                'dpi': dpi,
-                'date': date,
-                'telephone': telephone,
-                'username': username,
-                'email': email,
-            })
+            return render(request, 'generales/register.html', {...})
 
-            
         user = User.objects.create_user(username=username, email=email, password=password)
         user.save()
+
+        # Procesamiento del reconocimiento facial
+        if face_image:
+            # Convertir la imagen en un formato adecuado para face_recognition
+            image = face_recognition.load_image_file(face_image)
+            face_encodings = face_recognition.face_encodings(image)
+
+            if face_encodings:
+                face_encoding = face_encodings[0]
+            else:
+                messages.error(request, 'No se detectó ningún rostro en la imagen proporcionada.')
+                return render(request, 'generales/register.html', {...})
+
+        # Guardar el perfil con el encoding facial
+        user_profile = UserProfile.objects.create(
+            user=user,
+            face_encoding=face_encoding.tobytes() if face_encodings else None
+        )
+        user_profile.save()
 
         student = Student.objects.create(
             name=name,
@@ -111,15 +136,15 @@ def register(request):
             telefhone=telephone,
             username=user,
             email=email,
-            # password=password,
-            # password_check=password_check,
+            image=face_image
         )
         student.save()
 
         messages.success(request, 'Registro exitoso.')
-        return redirect('paginaprincipal')  # Redireccionar a la página principal después del registro
+        return redirect('paginaprincipal')
 
     return render(request, 'generales/register.html')
+
 
     
 
@@ -226,27 +251,35 @@ def some_view(request):
 
     return render(request, 'some_template.html', context)
 
+
 @login_required
 def enroll_in_course(request, course_id):
     student = get_object_or_404(Student, username=request.user)  # Buscamos el estudiante asociado al usuario actual
     course = get_object_or_404(Course, id=course_id)  # Obtenemos el curso seleccionado
-
-    # Verificar si el estudiante ya está matriculado en el curso
-    existing_enrollment = Enrollment.objects.filter(student=student, course=course).exists()
     
-    if existing_enrollment:
-        # Si ya está matriculado, mostrar un mensaje de error y redirigir
-        messages.error(request, f'Ya estás matriculado en el curso "{course.name}".')
-        return redirect('my_courses')
-
+    # Verificamos si el estudiante ya está inscrito en el curso
+    if Enrollment.objects.filter(student=student, course=course).exists():
+        messages.warning(request, 'Ya estás inscrito en este curso.')
+        return redirect('course_list')  # Redirigimos a la lista de cursos
+    
+    # Verificamos si el curso está lleno
+    if course.is_full:
+        messages.error(request, 'Lo sentimos, el curso está lleno.')
+        return redirect('course_list')  # Redirige a la lista de cursos si el curso está lleno
+    
     if request.method == 'POST':
         form = EnrollmentForm(request.POST)
         if form.is_valid():
             enrollment = form.save(commit=False)
             enrollment.student = student
-            enrollment.course = course
+            enrollment.course = course  # Asegúrate de asignar el curso a la matrícula
             enrollment.save()
-            messages.success(request, f'Te has matriculado correctamente en "{course.name}".')
+            
+            # Actualizamos el número de estudiantes inscritos
+            course.enrolled_students += 1
+            course.save()  # Guardamos los cambios en el curso
+
+            messages.success(request, 'Te has matriculado exitosamente en el curso.')
             return redirect('my_courses')  # Redirigimos a la página donde se muestran los cursos matriculados
     else:
         form = EnrollmentForm(initial={'course': course})
@@ -254,16 +287,16 @@ def enroll_in_course(request, course_id):
     return render(request, 'generales/enroll.html', {'form': form, 'course': course})
 
 
+
 @login_required
 def course_list(request):
     student = get_object_or_404(Student, username=request.user)  # Obtener el estudiante actual
     courses = Course.objects.all()  # Obtener todos los cursos
-    # Obtener los IDs de los cursos en los que el estudiante está matriculado
     enrolled_courses = Enrollment.objects.filter(student=student).values_list('course_id', flat=True)
     
     return render(request, 'generales/cursos.html', {
         'courses': courses,
-        'enrolled_courses': list(enrolled_courses),  # Convertir a lista
+        'enrolled_courses': list(enrolled_courses),
     })
 
 
@@ -279,3 +312,186 @@ def my_courses(request):
         'student': student,
         'enrolled_courses': enrolled_courses
     })
+
+
+@login_required
+def unenroll_course(request, course_id):
+    student = get_object_or_404(Student, username=request.user)  # Obtener el estudiante actual
+    course = get_object_or_404(Course, id=course_id)  # Obtener el curso
+
+    # Buscar la inscripción y eliminarla
+    enrollment = Enrollment.objects.filter(student=student, course=course).first()
+    if enrollment:
+        # Eliminar la inscripción
+        enrollment.delete()
+
+        # Disminuir el número de estudiantes inscritos en el curso
+        if course.enrolled_students > 0:
+            course.enrolled_students -= 1
+            course.save()  # Guardar el curso para actualizar el número de estudiantes inscritos
+
+        messages.success(request, f'Te has desmatriculado del curso "{course.name}".')
+    else:
+        messages.error(request, f'No estás matriculado en el curso "{course.name}".')
+
+    return redirect('my_courses')
+
+
+def get_stored_image_path(username):
+    # Define el nombre del archivo basado en el nombre de usuario
+    path = os.path.join(settings.STATICFILES_DIRS[0], 'img', 'face_images')
+    if not os.path.exists(path):
+        os.makedirs(path)  # Crea el directorio si no existe
+    return os.path.join(path, f"{username}.png")
+
+def login_with_face(request):
+    if request.method == 'POST':
+        # Obtener datos de la imagen y el nombre de usuario
+        image_data = request.POST.get('image')
+        username = request.POST.get('username')
+        
+        # Asegúrate de que la imagen se reciba correctamente
+        if not image_data or not username:
+            return JsonResponse({'error': 'No se recibió la imagen o el nombre de usuario.'})
+
+        # Procesar la imagen aquí (opcionalmente, almacénala)
+        # Eliminar el prefijo 'data:image/jpeg;base64,' del dataUrl
+        image_data = image_data.split(',')[1]  # Extraer solo los datos base64
+        image_data = base64.b64decode(image_data)  # Decodificar la imagen
+
+        # Guardar la imagen en el directorio especificado
+        image_path = f'statics/img/face_images/{username}.jpg'
+        with open(image_path, 'wb') as img_file:
+            img_file.write(image_data)
+
+        return JsonResponse({'message': 'Foto recibida y almacenada.'})
+
+    return render(request, 'generales/login_with_face.html')
+
+def send_confirmation_email(request):
+    if request.method == "POST":
+        # Obtén el estudiante a partir del usuario autenticado
+        try:
+            student = Student.objects.get(username=request.user)
+        except Student.DoesNotExist:
+            return JsonResponse({'error': 'No se encontró el estudiante relacionado con este usuario.'})
+
+        # Obtén los cursos matriculados para el estudiante
+        enrolled_courses = Enrollment.objects.filter(student=student)
+
+        # Verifica si el estudiante tiene cursos matriculados
+        if enrolled_courses.exists():
+            courses_list = ', '.join([enrollment.course.name for enrollment in enrolled_courses])
+            subject = "Confirmación de Matrícula"
+            message = f"Estás matriculado en los siguientes cursos: {courses_list}"
+            from_email = 'noreply@tudominio.com'  # Remitente ficticio
+
+            # Enviar correo
+            send_mail(subject, message, from_email, [student.email])  # Envía el correo al email del estudiante
+
+            return JsonResponse({'message': 'Correo enviado correctamente.'})
+        else:
+            return JsonResponse({'error': 'No tienes cursos matriculados.'})
+
+    return JsonResponse({'error': 'Método no permitido.'})
+
+
+def password_reset(request):
+    context = {}
+    return render(request,'generales/password_reset.html',context)
+
+
+
+##################
+
+
+def set_username_password(request, uidb64, token):
+    try:
+        # Decodificar el uid
+        uid = urlsafe_base64_decode(uidb64).decode()
+        user = User.objects.get(pk=uid)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        user = None
+
+    # Verifica si el token es válido
+    if user is not None and default_token_generator.check_token(user, token):
+        if request.method == 'POST':
+            username = request.POST.get('username')
+            password = request.POST.get('password')
+
+            if username and password:
+                # Asigna el nuevo username y la contraseña
+                user.username = username
+                user.set_password(password)
+                user.save()
+
+                messages.success(request, 'Nombre de usuario y contraseña actualizados exitosamente.')
+                return redirect('login')  # Redirige al login
+
+        return render(request, 'generales/set_username_password.html', {'validlink': True, 'user': user})
+    else:
+        messages.error(request, 'El enlace es inválido o ha caducado.')
+        return redirect('password_reset')
+    
+
+
+
+@login_required
+def teacher_panel(request):
+    try:
+        teacher = Teacher.objects.get(user=request.user)
+    except Teacher.DoesNotExist:
+        raise PermissionDenied("No tienes permiso para acceder a esta página.")
+
+    enrollments = Enrollment.objects.filter(course__teacher=teacher)
+
+    teacher = get_object_or_404(Teacher, user=request.user)
+    enrollments = Enrollment.objects.filter(course__teacher=teacher)  # Ajustado para usar ForeignKey
+
+    if request.method == 'POST':
+        # Asignar notas a los estudiantes
+        for enrollment in enrollments:
+            grade = request.POST.get(f'grade_{enrollment.id}')
+            if grade:
+                try:
+                    enrollment.grade = float(grade)
+                    enrollment.save()
+                except ValueError:
+                    messages.error(request, f'Nota inválida para {enrollment.student.name} {enrollment.student.lastname}.')
+        
+        # Expulsar a un estudiante
+        if 'expel_student' in request.POST:
+            enrollment_id = request.POST.get('expel_student')
+            try:
+                enrollment = Enrollment.objects.get(id=enrollment_id, course__teacher=teacher)
+                enrollment.delete()
+                messages.success(request, 'Estudiante expulsado correctamente.')
+            except Enrollment.DoesNotExist:
+                messages.error(request, 'Inscripción no encontrada o no tienes permiso para expulsar este estudiante.')
+
+        return redirect('teacher_panel')  # Evita resubmisiones de formulario
+
+    return render(request, 'generales/teacher_panel.html', {'enrollments': enrollments})
+
+def generate_pdf_report(request):
+    teacher = get_object_or_404(Teacher, user=request.user)
+    enrollments = Enrollment.objects.filter(course__teacher=teacher)
+
+    context = {
+        'enrollments': enrollments,
+        'teacher': teacher,
+        'base_url': request.build_absolute_uri('/')  # Obtener la URL base (http://127.0.0.1:8000/)
+    }
+    html = render_to_string('generales/pdf_report_template.html', context)
+
+    config = pdfkit.configuration(wkhtmltopdf='/usr/bin/wkhtmltopdf')  # O sin ruta si está en PATH
+
+    try:
+        pdf = pdfkit.from_string(html, False, configuration=config)
+    except Exception as e:
+        messages.error(request, f'Error al generar PDF: {e}')
+        return redirect('teacher_panel')
+
+    response = HttpResponse(pdf, content_type='application/pdf')
+    response['Content-Disposition'] = 'attachment; filename="reporte_alumnos.pdf"'
+    return response
